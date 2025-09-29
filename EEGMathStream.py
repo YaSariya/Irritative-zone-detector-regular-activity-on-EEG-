@@ -1,33 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
-
-
-pip install streamlit
-
-
-# In[ ]:
-
-
-streamlit run simple_app.py
-
-
-# In[ ]:
-
-
-pip install numpy pandas matplotlib pyedflib pywavelets scipy
-
-
-# In[ ]:
-
-
-streamlit run app.py
-
-
-# In[ ]:
-
-
 # app.py - Минимальная версия анализатора ЭЭГ
 
 import streamlit as st
