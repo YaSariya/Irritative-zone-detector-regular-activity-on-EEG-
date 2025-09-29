@@ -274,8 +274,8 @@ def main():
                         report_data.sort(key=lambda x: x['Интервалы'], reverse=True)
                         top_report_data = report_data[:top_channels]
                         
-                        # Отображаем таблицу
-                        st.dataframe(top_report_data, use_container_width=True)
+                        # Отображаем таблицу - ИСПРАВЛЕНИЕ ЗДЕСЬ
+                        st.dataframe(top_report_data, width='stretch')
                         
                         # Визуализация топ-каналов
                         st.header("🎯 Визуализация топ-каналов")
@@ -349,7 +349,8 @@ def main():
                                         }
                                         for start, end, duration in results['intervals']
                                     ])
-                                    st.dataframe(intervals_df, use_container_width=True)
+                                    # ИСПРАВЛЕНИЕ ЗДЕСЬ
+                                    st.dataframe(intervals_df, width='stretch')
                     
                     else:
                         st.info("Ритмическая активность не обнаружена на анализируемых каналах.")
