@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pyedflib
 import pywt
-from scipy.signal import butter, filtfilt, hilbert, periodogram
+from scipy.signal import butter, filtfilt, hilbert, periodogram, find_peaks
 import pandas as pd
 from datetime import datetime
 import os
@@ -93,8 +93,44 @@ class EEGRhythmicActivityDetector:
         
         return filtered_signal
     
+    def is_rhythmic_activity(self, signal_segment, fs, min_peaks=6, max_freq_variation=0.3, max_amp_variation=0.5):
+        """
+        Проверяет, является ли сегмент сигнала ритмической активностью
+        Ритмическая активность: 6+ последовательных волн со стабильной частотой и амплитудой
+        """
+        try:
+            # Находим пики в сегменте
+            peaks, properties = find_peaks(signal_segment, height=0, distance=int(fs/(high_freq*2)))
+            
+            if len(peaks) < min_peaks:
+                return False, 0, 0, 0
+            
+            # Вычисляем интервалы между пиками (периоды)
+            peak_intervals = np.diff(peaks) / fs  # в секундах
+            peak_frequencies = 1.0 / peak_intervals  # частоты между пиками
+            
+            # Вычисляем амплитуды пиков
+            peak_amplitudes = signal_segment[peaks]
+            
+            # Проверяем вариабельность частот
+            freq_variation = np.std(peak_frequencies) / np.mean(peak_frequencies)
+            
+            # Проверяем вариабельность амплитуд
+            amp_variation = np.std(peak_amplitudes) / np.mean(np.abs(peak_amplitudes))
+            
+            # Проверяем условия ритмичности
+            is_rhythmic = (freq_variation <= max_freq_variation and 
+                          amp_variation <= max_amp_variation and
+                          len(peaks) >= min_peaks)
+            
+            return is_rhythmic, len(peaks), freq_variation, amp_variation
+            
+        except Exception as e:
+            return False, 0, 0, 0
+    
     def detect_rhythmic_bursts(self, filtered_signal, fs, low_freq=1, high_freq=40, 
-                              threshold_percentile=85, min_duration=0.1, max_duration=2.0):
+                              threshold_percentile=85, min_duration=0.1, max_duration=2.0,
+                              min_peaks=6, max_freq_variation=0.3, max_amp_variation=0.5):
         try:
             # Параметры вейвлет-анализа
             frequencies = np.linspace(high_freq, low_freq, 50)
@@ -126,7 +162,18 @@ class EEGRhythmicActivityDetector:
                     if min_duration <= duration <= max_duration:
                         start_time = start_idx / fs
                         end_time = end_idx / fs
-                        intervals.append((start_time, end_time, duration))
+                        
+                        # Проверяем, является ли интервал ритмической активностью
+                        segment_start = max(0, start_idx - int(0.1 * fs))  # добавляем небольшой запас
+                        segment_end = min(len(filtered_signal), end_idx + int(0.1 * fs))
+                        signal_segment = filtered_signal[segment_start:segment_end]
+                        
+                        is_rhythmic, n_peaks, freq_var, amp_var = self.is_rhythmic_activity(
+                            signal_segment, fs, min_peaks, max_freq_variation, max_amp_variation
+                        )
+                        
+                        if is_rhythmic:
+                            intervals.append((start_time, end_time, duration, n_peaks, freq_var, amp_var))
                     
                     start_idx = None
             
@@ -137,7 +184,17 @@ class EEGRhythmicActivityDetector:
                 if min_duration <= duration <= max_duration:
                     start_time = start_idx / fs
                     end_time = end_idx / fs
-                    intervals.append((start_time, end_time, duration))
+                    
+                    segment_start = max(0, start_idx - int(0.1 * fs))
+                    segment_end = min(len(filtered_signal), end_idx + int(0.1 * fs))
+                    signal_segment = filtered_signal[segment_start:segment_end]
+                    
+                    is_rhythmic, n_peaks, freq_var, amp_var = self.is_rhythmic_activity(
+                        signal_segment, fs, min_peaks, max_freq_variation, max_amp_variation
+                    )
+                    
+                    if is_rhythmic:
+                        intervals.append((start_time, end_time, duration, n_peaks, freq_var, amp_var))
             
             return intervals, mean_energy, coefficients, frequencies
         
@@ -145,7 +202,8 @@ class EEGRhythmicActivityDetector:
             st.error(f"Ошибка в детектировании: {e}")
             return [], np.zeros_like(filtered_signal), np.array([]), np.array([])
     
-    def analyze_all_channels(self, low_freq=1, high_freq=40, channels_to_analyze=None):
+    def analyze_all_channels(self, low_freq=1, high_freq=40, channels_to_analyze=None,
+                           min_peaks=6, max_freq_variation=0.3, max_amp_variation=0.5):
         if not hasattr(self, 'multi_channel_data'):
             self.load_edf_data(load_all_channels=True)
         
@@ -174,7 +232,11 @@ class EEGRhythmicActivityDetector:
             
             # Детектирование всплесков
             intervals, energy, coefficients, frequencies = self.detect_rhythmic_bursts(
-                filtered_signal, fs, low_freq, high_freq)
+                filtered_signal, fs, low_freq, high_freq,
+                min_peaks=min_peaks,
+                max_freq_variation=max_freq_variation,
+                max_amp_variation=max_amp_variation
+            )
             
             # Сохраняем результаты
             self.all_channel_results[channel_name] = {
@@ -186,7 +248,7 @@ class EEGRhythmicActivityDetector:
                 'signal': signal,
                 'fs': fs,
                 'intervals_count': len(intervals),
-                'total_duration': sum(duration for _, _, duration in intervals)
+                'total_duration': sum(duration for duration, _, _, _, _, _ in intervals)
             }
             
             if intervals:
@@ -208,7 +270,7 @@ def plot_to_html(fig):
 
 def main():
     # Заголовок приложения
-    st.title("🧠 Детекция ритмической быстроволновой активности")
+    st.title("🧠 Детекция ритмической активности")
     st.markdown("""
     Веб-приложение для автоматического детектирования участков с частой ритмической активностью 
     (острые регулярные волны) в записях ЭЭГ формата EDF.
@@ -221,11 +283,17 @@ def main():
     uploaded_file = st.sidebar.file_uploader("Загрузите EDF файл", type=['edf'])
     
     if uploaded_file is not None:
-        # Параметры анализа
+        # Основные параметры анализа
         low_freq = st.sidebar.slider("Нижняя граница частоты (Гц)", 1, 30, 15)
         high_freq = st.sidebar.slider("Верхняя граница частоты (Гц)", 20, 100, 30)
         top_channels = st.sidebar.slider("Количество топ-каналов для отображения", 1, 20, 10)
         threshold = st.sidebar.slider("Порог детектирования (%)", 70, 95, 85)
+        
+        # Расширенные настройки ритмичности
+        with st.sidebar.expander("Настройки ритмичности"):
+            min_peaks = st.slider("Минимальное количество волн", 3, 12, 6)
+            max_freq_variation = st.slider("Макс. вариация частоты", 0.1, 1.0, 0.3, 0.05)
+            max_amp_variation = st.slider("Макс. вариация амплитуды", 0.1, 1.0, 0.5, 0.05)
         
         # Кнопка запуска анализа
         if st.sidebar.button("Запустить анализ", type="primary"):
@@ -237,7 +305,10 @@ def main():
                     # Загрузка и анализ данных
                     active_channels = detector.analyze_all_channels(
                         low_freq=low_freq, 
-                        high_freq=high_freq
+                        high_freq=high_freq,
+                        min_peaks=min_peaks,
+                        max_freq_variation=max_freq_variation,
+                        max_amp_variation=max_amp_variation
                     )
                     
                     # Основная информация о файле
@@ -260,13 +331,17 @@ def main():
                     report_data = []
                     for channel_name, results in detector.all_channel_results.items():
                         if results['intervals']:
+                            total_peaks = sum(peaks for _, _, _, peaks, _, _ in results['intervals'])
+                            avg_freq_var = np.mean([freq_var for _, _, _, _, freq_var, _ in results['intervals']])
+                            avg_amp_var = np.mean([amp_var for _, _, _, _, _, amp_var in results['intervals']])
+                            
                             report_data.append({
                                 'Канал': channel_name,
                                 'Интервалы': results['intervals_count'],
+                                'Волны': total_peaks,
                                 'Общая длительность (с)': f"{results['total_duration']:.2f}",
-                                'Ср. длительность (с)': f"{results['total_duration']/results['intervals_count']:.2f}",
-                                'Ср. амплитуда (мкВ)': f"{np.mean(np.abs(results['filtered_signal'])):.4f}",
-                                'Макс. амплитуда (мкВ)': f"{np.max(np.abs(results['filtered_signal'])):.4f}"
+                                'Вариация частоты': f"{avg_freq_var:.3f}",
+                                'Вариация амплитуды': f"{avg_amp_var:.3f}"
                             })
                     
                     if report_data:
@@ -274,7 +349,7 @@ def main():
                         report_data.sort(key=lambda x: x['Интервалы'], reverse=True)
                         top_report_data = report_data[:top_channels]
                         
-                        # Отображаем таблицу - ИСПРАВЛЕНИЕ ЗДЕСЬ
+                        # Отображаем таблицу
                         st.dataframe(top_report_data, width='stretch')
                         
                         # Визуализация топ-каналов
@@ -296,8 +371,11 @@ def main():
                                 ax.plot(times, results['signal'], 'b-', alpha=0.7, label='Исходный ЭЭГ')
                                 
                                 # Выделение обнаруженных интервалов
-                                for start, end, duration in results['intervals']:
+                                for start, end, duration, peaks, freq_var, amp_var in results['intervals']:
                                     ax.axvspan(start, end, alpha=0.3, color='red')
+                                    # Подписываем количество волн
+                                    ax.text((start + end) / 2, ax.get_ylim()[1] * 0.9, 
+                                           f'{peaks} волн', ha='center', va='top', fontsize=8)
                                 
                                 ax.set_title(f'Канал: {channel_name} - {results["intervals_count"]} интервалов, {results["total_duration"]:.2f} с')
                                 ax.set_xlabel('Время (с)')
@@ -326,6 +404,12 @@ def main():
                                              extent=extent, aspect='auto', 
                                              origin='lower', cmap=cmap)
                                 
+                                # Отмечаем обнаруженные интервалы на спектрограмме
+                                for start, end, duration, peaks, freq_var, amp_var in results['intervals']:
+                                    ax.axvline(x=start, color='white', linestyle='--', alpha=0.7)
+                                    ax.axvline(x=end, color='white', linestyle='--', alpha=0.7)
+                                    ax.axvspan(start, end, alpha=0.2, color='white')
+                                
                                 ax.set_title(f'Спектрограмма - Канал: {channel_name}')
                                 ax.set_xlabel('Время (с)')
                                 ax.set_ylabel('Частота (Гц)')
@@ -345,11 +429,13 @@ def main():
                                         {
                                             'Начало (с)': start,
                                             'Конец (с)': end, 
-                                            'Длительность (с)': duration
+                                            'Длительность (с)': f"{duration:.2f}",
+                                            'Кол-во волн': peaks,
+                                            'Вариация частоты': f"{freq_var:.3f}",
+                                            'Вариация амплитуды': f"{amp_var:.3f}"
                                         }
-                                        for start, end, duration in results['intervals']
+                                        for start, end, duration, peaks, freq_var, amp_var in results['intervals']
                                     ])
-                                    # ИСПРАВЛЕНИЕ ЗДЕСЬ
                                     st.dataframe(intervals_df, width='stretch')
                     
                     else:
@@ -368,12 +454,16 @@ def main():
            - Частотный диапазон для детекции (по умолчанию 15-30 Гц)
            - Количество топ-каналов для отображения
            - Порог детектирования
-        3. **Нажмите кнопку "Запустить анализ"**
+        3. **Настройте критерии ритмичности** (в расширенных настройках):
+           - Минимальное количество последовательных волн (не менее 6)
+           - Максимальная вариация частоты и амплитуды
+        4. **Нажмите кнопку "Запустить анализ"**
         
-        ### Анализируемые паттерны:
-        - Частая ритмическая активность в заданном частотном диапазоне
-        - Острые регулярные волны
-        - Ритмические всплески длительностью 0.1-2.0 секунды
+        ### Критерии ритмической активности:
+        - **6+ последовательных волн** с стабильными параметрами
+        - **Стабильная частота** (вариация < 30%)
+        - **Стабильная амплитуда** (вариация < 50%)
+        - **Длительность** от 0.1 до 2.0 секунд
         
         ### Выходные данные:
         - Таблица с статистикой по каналам
@@ -381,20 +471,6 @@ def main():
         - Спектрограммы для анализа частотно-временных характеристик
         - Детальный отчет по временным интервалам
         """)
-        
-        # Пример визуализации
-        st.header("📋 Пример выходных данных")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Сигнал с детекцией")
-            st.image("https://via.placeholder.com/600x300/4B7BEC/FFFFFF?text=ЭЭГ+сигнал+с+детекцией", 
-                    caption="Пример визуализации ЭЭГ сигнала с выделенными интервалами активности")
-        
-        with col2:
-            st.subheader("Спектрограмма")
-            st.image("https://via.placeholder.com/600x300/32CD32/FFFFFF?text=Спектрограмма+активности", 
-                    caption="Пример спектрограммы с выделенной ритмической активностью")
 
 if __name__ == "__main__":
     main()
